@@ -5,6 +5,8 @@ Member 1: Computer Vision & Gesture Lead (Adithiyan V R)
 """
 
 import math
+import time
+from collections import deque
 from typing import List, Dict, Tuple, Optional
 import cv2
 import mediapipe as mp
@@ -14,7 +16,8 @@ class GestureEngine:
     """
     Core Computer Vision & Hand Landmark Processing Engine powered by MediaPipe.
     Extracts 21 3D hand landmarks, applies palm-relative distance normalization,
-    and classifies static poses (OPEN_PALM vs. CLOSED_FIST).
+    and classifies static poses (OPEN_PALM vs. CLOSED_FIST), dynamic swipes (SWIPE_LEFT, SWIPE_RIGHT),
+    and two-hand fail-safe emergency stop.
     """
 
     # Hand Landmark Indices (MediaPipe)
@@ -52,7 +55,7 @@ class GestureEngine:
                  min_detection_confidence: float = 0.7,
                  min_tracking_confidence: float = 0.5):
         """
-        Initialize the MediaPipe Hands pipeline.
+        Initialize the MediaPipe Hands pipeline, 5-frame rolling buffer, and cooldown timers.
         """
         self.mp_hands = mp.solutions.hands
         self.mp_drawing = mp.solutions.drawing_utils
@@ -64,6 +67,14 @@ class GestureEngine:
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence
         )
+
+        # 5-Frame Rolling Buffer for Wrist Velocity (dx/dt)
+        self.wrist_history = deque(maxlen=5)
+
+        # Swipe parameters & debouncing
+        self.swipe_threshold = 0.75  # Normalized horizontal velocity threshold (screen width/sec)
+        self.swipe_cooldown = 0.8    # 0.8s cooldown to prevent bounce-back accidental swipes
+        self.last_swipe_time = 0.0
 
     def process_frame(self, frame_bgr):
         """
@@ -152,6 +163,68 @@ class GestureEngine:
             return "CLOSED_FIST"
         else:
             return "UNKNOWN"
+
+    def update_wrist_trajectory(self, wrist_landmark: Dict[str, float], d_palm: float = 1.0) -> None:
+        """
+        Record wrist horizontal coordinate and timestamp into the 5-frame rolling buffer.
+        """
+        now = time.time()
+        self.wrist_history.append({
+            "time": now,
+            "x": wrist_landmark["x"],
+            "px": wrist_landmark["px"],
+            "d_palm": max(1e-5, d_palm)
+        })
+
+    def detect_swipe(self, pose: str) -> Optional[str]:
+        """
+        Dynamic Swipe Recognition:
+        Computes wrist horizontal velocity (dx/dt) over the 5-frame rolling buffer.
+        Requirements:
+        - Hand must be in 'OPEN_PALM' pose
+        - 0.8s cooldown elapsed to prevent accidental reverse swipes
+        Returns:
+        - 'SWIPE_RIGHT': next SOP/recipe step
+        - 'SWIPE_LEFT': previous SOP/recipe step
+        - None: no swipe detected or threshold not met
+        """
+        now = time.time()
+        if now - self.last_swipe_time < self.swipe_cooldown:
+            return None
+
+        # Swipe requires intentional open palm motion
+        if pose != "OPEN_PALM":
+            return None
+
+        if len(self.wrist_history) < 5:
+            return None
+
+        t_start = self.wrist_history[0]["time"]
+        t_end = self.wrist_history[-1]["time"]
+        dt = t_end - t_start
+
+        if dt <= 0.001 or dt > 0.4:
+            # Buffer too stale or time window invalid
+            return None
+
+        x_start = self.wrist_history[0]["x"]
+        x_end = self.wrist_history[-1]["x"]
+        dx = x_end - x_start
+
+        # Calculate horizontal velocity vx = dx / dt
+        # In mirrored frame, positive dx indicates motion toward the user's right
+        vx = dx / dt
+
+        if vx > self.swipe_threshold:
+            self.last_swipe_time = now
+            self.wrist_history.clear()
+            return "SWIPE_RIGHT"
+        elif vx < -self.swipe_threshold:
+            self.last_swipe_time = now
+            self.wrist_history.clear()
+            return "SWIPE_LEFT"
+
+        return None
 
     def draw_skeleton(self, frame, hand_landmarks):
         """Draw hand skeleton overlay on frame."""
