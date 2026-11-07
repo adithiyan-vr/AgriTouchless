@@ -207,6 +207,61 @@ class TestAgriTouchless(unittest.TestCase):
                               dwell_progress=0.5, dwell_center=(400, 300), detected_produce=item)
         self.assertEqual(rendered.shape, (720, 1280, 3))
 
+    def test_unknown_object_rejection_and_farmer_automation(self):
+        """
+        Verify rejection of unknown/foreign items (never labeled as fruits/vegetables),
+        foreign object safety interlock, and Farmer Automation batch portioning.
+        """
+        detector = ProduceDetector()
+        hud = HUDController()
+
+        # 1. Simulate Unknown Foreign Object on Scale (Keys '8' or 'u')
+        detector.set_simulated_produce("8")
+        foreign_item = detector.current_item
+        self.assertIsNotNone(foreign_item)
+        self.assertFalse(foreign_item.is_verified_produce)
+        self.assertIn("Unknown", foreign_item.name)
+        self.assertNotIn("Tomato", foreign_item.name)
+        self.assertNotIn("Apple", foreign_item.name)
+        self.assertNotIn("Banana", foreign_item.name)
+
+        # 2. Update HUD with Foreign Item
+        hud.update_simulation(detected_produce=foreign_item)
+        self.assertTrue(hud.is_foreign_object)
+
+        # Foreign object must interlock/pause automation from advancing
+        hud.current_step_idx = 2  # Step 3: Weigh 500g
+        hud.raw_weight = 500.0    # Even if weight matches 500g
+        time.sleep(0.05)
+        hud.update_simulation(detected_produce=foreign_item)
+        self.assertEqual(hud.current_step_idx, 2)  # Blocked from advancing
+
+        # 3. Farmer Automation with Authentic Harvest Produce
+        detector.set_simulated_produce("1")  # Grade-A Tomato
+        produce_item = detector.current_item
+        self.assertTrue(produce_item.is_verified_produce)
+        # Simulate a full 500g commercial crate portion
+        produce_item.base_weight_g = 500.0
+
+        # Set scale to target portion (500g)
+        hud.raw_weight = 500.0
+        hud.tare_offset = 0.0
+        hud.auto_portion_stable_time = time.time() - 1.5  # Simulate 1.5s stable load
+
+        initial_crates = hud.crates_packed
+        hud.update_simulation(detected_produce=produce_item)
+
+        # Auto-portion must advance step and record harvest KPI
+        self.assertEqual(hud.current_step_idx, 3)  # Advanced to step 4
+        self.assertEqual(hud.crates_packed, initial_crates + 1)
+        self.assertGreater(hud.total_harvest_kg, 0.45)
+        self.assertIn("AUTO-PACK", hud.action_banner_text)
+
+        # 4. Toggle Automation
+        initial_state = hud.automation_enabled
+        hud.toggle_automation()
+        self.assertNotEqual(hud.automation_enabled, initial_state)
+
 
 if __name__ == '__main__':
     unittest.main()

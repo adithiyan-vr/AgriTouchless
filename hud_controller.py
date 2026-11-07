@@ -67,6 +67,17 @@ class HUDController:
         self.current_step_idx = 1  # Start at step 2/5 as per design spec
         self.step_start_time = time.time()
 
+        # Farmer Automation Engine State
+        self.automation_enabled = True       # Hands-free auto-pack & yield tracker
+        self.target_batch_weight = 500.0     # Commercial target portion (grams)
+        self.batch_tolerance = 45.0          # Allowable batch portion tolerance (+/- 45g)
+        self.crates_packed = 0               # Total crates processed in session
+        self.total_harvest_kg = 0.0          # Cumulative harvest yield (kg)
+        self.auto_portion_stable_time = 0.0  # Stable weight settling timer
+        self.auto_portion_triggered = False  # Latch to prevent repeat triggers
+        self.is_foreign_object = False       # True if foreign/unknown item on scale
+        self.auto_tare_ready = False         # Crate cycle auto-tare latch
+
         # Emergency Stop state
         self.emergency_stop = False
         self.e_stop_flash_state = False
@@ -143,14 +154,30 @@ class HUDController:
         self.emergency_stop = not self.emergency_stop
         self.play_sound("alert")
 
+    def toggle_automation(self):
+        """Toggle farmer automation engine (auto batch progression and yield tracking)."""
+        self.automation_enabled = not self.automation_enabled
+        status = "ENABLED" if self.automation_enabled else "PAUSED"
+        self.action_banner_text = f"FARM AUTOMATION: {status}"
+        self.action_banner_time = time.time()
+        self.action_banner_color = (0, 255, 120) if self.automation_enabled else (0, 180, 255)
+        self.play_sound("step")
+
     def update_simulation(self, detected_produce=None):
         """
         Simulate realistic load-cell settling physics and micro-sensor noise.
+        Integrates verified produce classification, foreign object rejection,
+        and automated agricultural portion batch packing.
         """
+        now = time.time()
+        self.is_foreign_object = False
+
         if detected_produce:
             self.target_weight = detected_produce.base_weight_g
             self.detected_produce_name = detected_produce.name
             self.detected_produce_category = detected_produce.category
+            if not getattr(detected_produce, "is_verified_produce", True):
+                self.is_foreign_object = True
         else:
             self.target_weight = 0.0
             self.detected_produce_name = "EMPTY PLATTER"
@@ -162,6 +189,31 @@ class HUDController:
             # Micro-fluctuation (+/- 0.15g)
             noise = random.uniform(-0.15, 0.15) if abs(self.raw_weight) > 1.0 else random.uniform(-0.04, 0.04)
             self.raw_weight += noise
+
+            # Farmer Automation Engine: Automated Batch Portioning & Progression
+            if self.automation_enabled and not self.is_foreign_object:
+                net_w = self.net_weight
+                # If currently at Step 3 (Weigh 500g fresh produce & portion into clean bins)
+                if self.current_step_idx == 2:
+                    # Check if net weight has reached target batch portion (500g +/- tolerance)
+                    if abs(net_w - self.target_batch_weight) <= self.batch_tolerance or net_w >= self.target_batch_weight:
+                        if self.auto_portion_stable_time == 0.0:
+                            self.auto_portion_stable_time = now
+                        elif now - self.auto_portion_stable_time >= 1.2 and not self.auto_portion_triggered:
+                            # Auto-complete crate portion & advance to packing step
+                            self.crates_packed += 1
+                            self.total_harvest_kg += net_w / 1000.0
+                            self.auto_portion_triggered = True
+                            self.next_step()
+                            self.action_banner_text = f"AUTO-PACK: CRATE #{self.crates_packed} BATCH MET ({net_w:.0f}g)"
+                            self.action_banner_time = now
+                            self.action_banner_color = (0, 255, 120)
+                    else:
+                        self.auto_portion_stable_time = 0.0
+                        self.auto_portion_triggered = False
+                elif self.current_step_idx != 2:
+                    self.auto_portion_stable_time = 0.0
+                    self.auto_portion_triggered = False
 
     @property
     def net_weight(self) -> float:
@@ -230,30 +282,41 @@ class HUDController:
         # --- Top Status Bar Text ---
         status_text = "SYSTEM: EMERGENCY STOP" if self.emergency_stop else "SYSTEM: RUNNING"
         status_color = self.COLOR_ALERT if self.emergency_stop else self.COLOR_SAFE
-        cv2.putText(frame, status_text, (25, 33), cv2.FONT_HERSHEY_DUPLEX, 0.75, status_color, 2, cv2.LINE_AA)
+        cv2.putText(frame, status_text, (25, 33), cv2.FONT_HERSHEY_DUPLEX, 0.68, status_color, 2, cv2.LINE_AA)
 
-        fps_text = f"FPS: {int(self.fps)}"
-        cv2.putText(frame, fps_text, (520, 33), cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_WHITE, 1, cv2.LINE_AA)
+        auto_tag = "AUTO-FARM: ACTIVE" if self.automation_enabled else "AUTO-FARM: PAUSED"
+        auto_color = self.COLOR_SAFE if self.automation_enabled else (140, 140, 140)
+        cv2.putText(frame, auto_tag, (285, 33), cv2.FONT_HERSHEY_DUPLEX, 0.54, auto_color, 1, cv2.LINE_AA)
 
-        hands_text = f"HANDS: {hands_detected}/2"
-        cv2.putText(frame, hands_text, (720, 33), cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_WHITE, 1, cv2.LINE_AA)
+        kpi_text = f"CRATES: {self.crates_packed} | YIELD: {self.total_harvest_kg:.1f}kg"
+        cv2.putText(frame, kpi_text, (520, 33), cv2.FONT_HERSHEY_DUPLEX, 0.54, (0, 220, 255), 1, cv2.LINE_AA)
 
         gesture_text = f"GESTURE: {current_gesture}"
-        cv2.putText(frame, gesture_text, (940, 33), cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_PROGRESS, 2, cv2.LINE_AA)
+        cv2.putText(frame, gesture_text, (950, 33), cv2.FONT_HERSHEY_DUPLEX, 0.62, self.COLOR_PROGRESS, 2, cv2.LINE_AA)
 
         # --- Digital Scale Simulator Card ---
         cv2.putText(frame, "DIGITAL SCALE SIMULATOR", (780, 95),
                     cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_WHITE, 2, cv2.LINE_AA)
 
         # Display detected produce name & status tag
-        cv2.putText(frame, f"Item: {self.detected_produce_name}", (780, 125),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 230, 255), 1, cv2.LINE_AA)
+        if self.is_foreign_object:
+            item_color = (30, 140, 255)
+            item_text = "Item: UNVERIFIED OBJECT (FOREIGN)"
+        else:
+            item_color = (0, 230, 255)
+            item_text = f"Item: {self.detected_produce_name}"
+        cv2.putText(frame, item_text, (780, 125),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.52, item_color, 1, cv2.LINE_AA)
 
         net_w = self.net_weight
         weight_str = f"{net_w:+,.1f} g" if abs(net_w) > 0.0 else "0.0 g"
 
         # Badge decision
-        if abs(net_w) < 0.3:
+        if self.is_foreign_object:
+            badge_text = "[FOREIGN ITEM]"
+            badge_color = (30, 140, 255)
+            w_color = (30, 140, 255)
+        elif abs(net_w) < 0.3:
             badge_text = "[TARED / ZEROED]" if self.is_tared else "[EMPTY PLATTER]"
             badge_color = self.COLOR_SAFE
             w_color = self.COLOR_SAFE
@@ -276,9 +339,9 @@ class HUDController:
         cv2.putText(frame, gross_info, (780, 202),
                     cv2.FONT_HERSHEY_DUPLEX, 0.48, self.COLOR_GRAY, 1, cv2.LINE_AA)
 
-        tare_note = "[Hold Fist 1s: Tare | Keys 1-6: Place Fruit/Veg | 0: Clear]"
+        tare_note = "[Hold Fist 1s: Tare | Keys 1-6: Produce | 8: Foreign Item | a: Auto]"
         cv2.putText(frame, tare_note, (780, 230),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_DUPLEX, 0.40, (180, 180, 180), 1, cv2.LINE_AA)
 
         # --- Active SOP / Recipe Card ---
         step_title = f"ACTIVE SOP / RECIPE STEP ({self.current_step_idx + 1}/{len(self.steps)})"
@@ -300,14 +363,38 @@ class HUDController:
             else:
                 line2 += (" " if line2 else "") + word
 
-        cv2.putText(frame, line1, (780, 385),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.6, self.COLOR_WHITE, 1, cv2.LINE_AA)
+        cv2.putText(frame, line1, (780, 375),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.56, self.COLOR_WHITE, 1, cv2.LINE_AA)
         if line2:
-            cv2.putText(frame, line2, (780, 420),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.6, self.COLOR_WHITE, 1, cv2.LINE_AA)
+            cv2.putText(frame, line2, (780, 405),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.56, self.COLOR_WHITE, 1, cv2.LINE_AA)
+
+        # Automated Batch Portion Gauge at Step 3
+        if self.current_step_idx == 2:
+            gauge_pct = min(1.0, max(0.0, net_w / self.target_batch_weight))
+            gauge_color = self.COLOR_SAFE if abs(net_w - self.target_batch_weight) <= self.batch_tolerance else self.COLOR_PROGRESS
+            if net_w > self.target_batch_weight + self.batch_tolerance:
+                gauge_color = (40, 140, 255)
+            cv2.rectangle(frame, (780, 440), (1220, 460), (50, 50, 50), -1)
+            fill_w = int(440 * gauge_pct)
+            if fill_w > 0:
+                cv2.rectangle(frame, (780, 440), (780 + fill_w, 460), gauge_color, -1)
+            cv2.rectangle(frame, (780, 440), (1220, 460), (100, 100, 100), 1)
+            status_str = "AUTO-PACK MET" if abs(net_w - self.target_batch_weight) <= self.batch_tolerance else "FILLING..."
+            gauge_label = f"BATCH: {net_w:.0f}g / 500g ({int(gauge_pct*100)}%) [{status_str}]"
+            cv2.putText(frame, gauge_label, (780, 432), cv2.FONT_HERSHEY_DUPLEX, 0.40, self.COLOR_WHITE, 1, cv2.LINE_AA)
 
         cv2.putText(frame, "[<< Swipe Left | Swipe Right >>]", (780, 485),
                     cv2.FONT_HERSHEY_DUPLEX, 0.6, self.COLOR_PROGRESS, 1, cv2.LINE_AA)
+
+        # Foreign Object Safety Interlock Warning Banner
+        if self.is_foreign_object and not self.emergency_stop:
+            interlock_overlay = frame.copy()
+            cv2.rectangle(interlock_overlay, (200, 520), (1080, 565), (20, 20, 120), -1)
+            cv2.addWeighted(interlock_overlay, 0.85, frame, 0.15, 0, frame)
+            cv2.rectangle(frame, (200, 520), (1080, 565), (40, 140, 255), 2)
+            cv2.putText(frame, "AUTOMATION INTERLOCK: UNVERIFIED OBJECT DETECTED - BATCH PAUSED",
+                        (220, 550), cv2.FONT_HERSHEY_DUPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
 
         # --- Transient Action Notification Banner (Swipes / Tare) ---
         now = time.time()

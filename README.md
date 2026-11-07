@@ -49,9 +49,19 @@ AgriTouchless features an integrated computer vision produce classifier operatin
   * 🥔 **Potato (Yukon Gold):** Earthy tan spectrum, oblong morphology, estimated mass $\sim 220\text{ g}$.
   * 🌿 **Leafy Greens / Basil:** Deep green foliage, irregular organic contours, estimated mass $\sim 55\text{ g}$.
 * **Load-Cell Physics:** The digital scale responds with smooth exponential load settling and transducer micro-noise. Removing an item after taring displays the negative tare offset (just like a physical lab scale).
-* **Keyboard Simulation Keys (For Testing Without Physical Produce):**
+* **Foreign Object Rejection & Safety Interlock:** Unverified non-produce objects (e.g. phones, coffee cups, metal tools, cardboard) are strictly rejected via color fill-density, mean saturation, and geometric aspect-ratio checks. They are flagged as `Unknown Object (Unverified Item)` with an Amber warning tag, halting automated batch packaging.
+* **Farmer Automation Engine (Automated Packaging Line):**
+  * **Auto-Portion Packaging:** Automatically tracks crate batch portion targets ($500.0\text{ g} \pm 45\text{ g}$). Once settled, the system automatically seals the crate and advances to the next SOP step without touch.
+  * **Session Crate & Yield Tracker:** Displays cumulative harvest metrics (`CRATES: X | YIELD: Y.Y kg`) in real-time.
+  * **Toggle Automation:** Press <kbd>a</kbd> anytime to enable or pause hands-free automation.
+* **Keyboard Simulation Keys (For Testing / Demo):**
   * `1`: Tomato (~185g) | `2`: Red Apple (~210g) | `3`: Banana (~135g)
-  * `4`: Carrot (~95g) | `5`: Greens (~55g) | `6`: Potato (~220g) | `0`: Clear Scale Platter
+  * `4`: Carrot (~95g) | `5`: Greens (~55g) | `6`: Potato (~220g)
+  * `8` or `u`: Simulate Unknown Foreign Object (Verify Rejection & Interlock)
+  * `0` or `c`: Clear Scale Platter (Empty)
+  * `a`: Toggle Farmer Automation Engine
+  * `r`: Start/Stop 60s Demo Video Recording (`submission_demo.mp4`)
+  * `h`: Toggle On-Screen Controls Cheatsheet Drawer
 
 ---
 
@@ -131,20 +141,26 @@ python main.py
 | `n` | Advance to Next SOP Step |
 | `p` | Return to Previous SOP Step |
 | `e` | Toggle Emergency Stop |
+| `a` | Toggle Farmer Automation Engine |
+| `1`–`6` | Place Simulated Produce (Tomato, Apple, Banana, Carrot, Greens, Potato) |
+| `8` / `u` | Place Simulated UNKNOWN Foreign Object (Test Rejection) |
+| `0` / `c` | Clear Scale Platter (Empty) |
+| `r` | Start / Stop 60-second Demo Video Recording (`submission_demo.mp4`) |
+| `h` | Toggle On-Screen Controls Cheatsheet Drawer |
 | `q` / `ESC` | Exit Application |
 
 ---
 
 ## 🧪 Automated Test Suite
 
-AgriTouchless includes a comprehensive unit and integration test suite verifying landmark normalization, static pose heuristics, dynamic velocity tracking, two-hand fail-safe detection, and HUD state rendering:
+AgriTouchless includes a comprehensive unit and integration test suite verifying landmark normalization, static pose heuristics, dynamic velocity tracking, two-hand fail-safe detection, produce verification, foreign object rejection, and farmer automation:
 
 ```powershell
 python test_agritouchless.py
 ```
 
 ```text
-Ran 6 tests in 0.390s
+Ran 7 tests in 0.426s
 OK
 ```
 

@@ -39,5 +39,7 @@
 ## Phase 5: Testing, Demo Video & Submission (Hour 5:30 – 6:00)
 - [x] **[Member 1]** Verify `git log` history to ensure clean, frequent commits from both members.
 - [x] **[Member 2]** Update `LOG.md` with final milestones, issues resolved, and demo instructions. *(Commit)*
-- [x] **[Member 1]** Implement master automated test suite (`test_agritouchless.py`) validating normalization, poses, velocity, and HUD state (6/6 tests passing).
-- [ ] **[Member 1 & Member 2]** Record a 60-second demo video showing Tare, Recipe Swipe, and Two-Hand Emergency Stop, and submit the project!
+- [x] **[Member 1]** Implement master automated test suite (`test_agritouchless.py`) validating normalization, poses, velocity, and HUD state (7/7 tests passing).
+- [x] **[Member 1 & Member 2]** Implement Foreign Object Rejection in `produce_detector.py` to prevent unknown objects from being classified as fruits or vegetables. *(Commit)*
+- [x] **[Member 1 & Member 2]** Implement Farmer Automation Engine in `hud_controller.py` featuring automated batch portioning, crate tallies, yield tracking, and safety interlock. *(Commit)*
+- [ ] **[Member 1 & Member 2]** Record a 60-second demo video showing Tare, Recipe Swipe, Farmer Automation, and Two-Hand Emergency Stop, and submit the project!

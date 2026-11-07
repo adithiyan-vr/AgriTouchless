@@ -58,9 +58,10 @@ def run_controller():
     print("  • Closed Fist (Hold 1.0s) : TARE / Zero Digital Scale")
     print("  • Swipe Left / Right      : Previous / Next SOP Recipe Step")
     print("  • Two-Hand 'Hands Up'     : Toggle EMERGENCY STOP / Machinery Pause")
+    print("  • Press 'a'               : Toggle Farmer Automation Engine (Auto-Portion & Crate Tally)")
     print("  • Press 'r'               : Start/Stop 60s Demo Video Recording (submission_demo.mp4)")
     print("  • Press 'h'               : Toggle On-Screen Controls Cheatsheet")
-    print("  • Keyboard shortcuts      : 't' (Tare), 'n' (Next), 'p' (Prev), 'e' (E-Stop), '1'-'6' (Produce), '0' (Clear), 'q' (Quit)\n")
+    print("  • Keyboard shortcuts      : 't' (Tare), 'n' (Next), 'p' (Prev), 'e' (E-Stop), 'a' (Auto), '1'-'6' (Produce), '8'/'u' (Foreign Item), '0' (Clear), 'q' (Quit)\n")
 
     try:
         frame_idx = 0
@@ -183,8 +184,10 @@ def run_controller():
                     ("Swipe Right (Open Palm)", "Advance to Next SOP / Recipe Step"),
                     ("Swipe Left (Open Palm)", "Return to Previous SOP / Recipe Step"),
                     ("Two-Hand Hands Up", "Toggle EMERGENCY STOP / Machinery Pause"),
+                    ("Key 'a'", "Toggle Farm Automation Engine (Auto-Portion & Crate Tally)"),
                     ("Key '1' to '6'", "Simulate Produce: 1=Tomato, 2=Apple, 3=Banana, 4=Carrot, 5=Greens, 6=Potato"),
-                    ("Key '0' or 'c'", "Clear Produce Platter (Empty Scale)"),
+                    ("Key '8' or 'u'", "Simulate UNKNOWN Foreign Object (Verify Rejection & Interlock)"),
+                    ("Key '0' or 'c'", "Clear Scale Platter (Empty)"),
                     ("Key 'r'", "Start / Stop recording 60s demo video (submission_demo.mp4)"),
                     ("Key 't' / 'n' / 'p' / 'e'", "Simulate Tare / Next / Prev / Emergency Stop manually"),
                     ("Key 'h'", "Close this Help Drawer"),
@@ -211,6 +214,8 @@ def run_controller():
                 hud.prev_step()
             elif key == ord('e'):
                 hud.toggle_emergency_stop()
+            elif key == ord('a'):
+                hud.toggle_automation()
             elif key == ord('h'):
                 show_help = not show_help
             elif key == ord('r'):
@@ -231,6 +236,10 @@ def run_controller():
                 # Simulate fruit/vegetable placement
                 produce_detector.set_simulated_produce(chr(key))
                 print(f"[PRODUCE SIMULATION] Placed {produce_detector.current_item.name} on scale")
+            elif key in [ord('8'), ord('u')]:
+                # Simulate foreign/unknown object placement to verify rejection
+                produce_detector.set_simulated_produce("8")
+                print("[PRODUCE SIMULATION] Placed UNKNOWN FOREIGN ITEM on scale (Verified Rejection & Interlock)")
             elif key in [ord('0'), ord('c')]:
                 # Clear scale platter
                 produce_detector.set_simulated_produce("0")
