@@ -19,8 +19,9 @@ In agricultural sorting sheds, greenhouse packing lines, and commercial food pre
 
 ## 💡 Solution Overview
 
-**AgriTouchless** is a low-latency ($< 50\text{ ms}$), camera-based touchless gesture controller executing on local CPU edge hardware. Powered by MediaPipe 21-landmark hand tracking, it enables agricultural workers and culinary staff to:
-* **Tare / Zero digital scales** with a closed fist dwell gesture.
+**AgriTouchless** is a low-latency ($< 50\text{ ms}$), camera-based touchless gesture controller executing on local CPU edge hardware. Powered by MediaPipe 21-landmark hand tracking and OpenCV computer vision segmentation, it enables agricultural workers and culinary staff to:
+* **Identify fruits and vegetables in real-time** (Tomatoes, Apples, Bananas, Carrots, Potatoes, Leafy Greens) in the dedicated Scale Weighing Zone.
+* **Tare / Zero digital scales** with realistic load-cell settling physics using a closed fist dwell gesture.
 * **Navigate SOPs & recipe checklists** using dynamic wrist swipes.
 * **Trigger an immediate emergency stop** using a two-hand fail-safe pose.
 
@@ -30,8 +31,27 @@ In agricultural sorting sheds, greenhouse packing lines, and commercial food pre
 
 | Member | Role | GitHub Handle | Primary Ownership |
 | :--- | :--- | :--- | :--- |
-| **Member 1** | Computer Vision & Gesture Lead | [`@adithiyan-vr`](https://github.com/adithiyan-vr) | [`gesture_engine.py`](gesture_engine.py) |
+| **Member 1** | Computer Vision & Gesture Lead | [`@adithiyan-vr`](https://github.com/adithiyan-vr) | [`gesture_engine.py`](gesture_engine.py) & [`produce_detector.py`](produce_detector.py) |
 | **Member 2** | Application State, HUD & Audio Lead | [`@jazeemanwar`](https://github.com/jazeemanwar) | [`hud_controller.py`](hud_controller.py) & [`main.py`](main.py) |
+
+---
+
+## 🍎 Fruit & Vegetable Identification & Scale Integration
+
+AgriTouchless features an integrated computer vision produce classifier operating inside the **Scale Weighing Zone**:
+* **Color & Geometry Profiling:** Multi-space HSV + Lab segmentation combined with circularity, solidity, and aspect-ratio heuristics.
+* **Supported Produce Profiles:**
+  * 🍅 **Tomato (Grade-A):** Red spectrum hue clustering, high circularity, estimated mass $\sim 185\text{ g}$.
+  * 🍎 **Red Apple (Gala):** Deep red hue, spherical contour, estimated mass $\sim 210\text{ g}$.
+  * 🍏 **Green Apple (Granny Smith):** Crisp green spectrum, smooth contour, estimated mass $\sim 205\text{ g}$.
+  * 🍌 **Banana (Cavendish):** Yellow saturation, high aspect ratio ($> 1.7$), estimated mass $\sim 135\text{ g}$.
+  * 🥕 **Carrot (Organic):** Vibrant orange spectrum, tapered morphology, estimated mass $\sim 95\text{ g}$.
+  * 🥔 **Potato (Yukon Gold):** Earthy tan spectrum, oblong morphology, estimated mass $\sim 220\text{ g}$.
+  * 🌿 **Leafy Greens / Basil:** Deep green foliage, irregular organic contours, estimated mass $\sim 55\text{ g}$.
+* **Load-Cell Physics:** The digital scale responds with smooth exponential load settling and transducer micro-noise. Removing an item after taring displays the negative tare offset (just like a physical lab scale).
+* **Keyboard Simulation Keys (For Testing Without Physical Produce):**
+  * `1`: Tomato (~185g) | `2`: Red Apple (~210g) | `3`: Banana (~135g)
+  * `4`: Carrot (~95g) | `5`: Greens (~55g) | `6`: Potato (~220g) | `0`: Clear Scale Platter
 
 ---
 

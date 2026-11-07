@@ -168,24 +168,66 @@ class GestureEngine:
 
     def classify_hand_pose(self, landmarks: List[Dict[str, float]]) -> str:
         """
-        Static Pose Classifier:
-        Compares fingertips (IDs 8, 12, 16, 20) against PIP joints (IDs 6, 10, 14, 18).
-        In image space, y=0 is at the top, so:
-        - Open Palm: Tip y < PIP y for all 4 fingers
-        - Closed Fist: Tip y > PIP y for all 4 fingers
+        Robust Static Pose Classifier (Rotation & Distance Invariant):
+        Calculates Euclidean distances from each fingertip to Wrist (P0) and MCP joints.
+        Works reliably at any hand angle (pointing up, forward, sideways, or diagonal).
+        
+        - OPEN_PALM: 4 or 5 fingers extended outward away from wrist/palm center.
+        - CLOSED_FIST: All 4 main fingers (Index, Middle, Ring, Pinky) curled tightly into palm.
         """
         if not landmarks or len(landmarks) < 21:
             return "UNKNOWN"
 
-        fingers_extended = []
-        for tip_id, pip_id in zip(self.FINGERTIP_IDS, self.PIP_IDS):
-            # Tip y < PIP y means finger is extended upwards
-            is_extended = landmarks[tip_id]["y"] < landmarks[pip_id]["y"]
-            fingers_extended.append(is_extended)
+        wrist = landmarks[self.WRIST]
+        middle_mcp = landmarks[self.MIDDLE_MCP]
 
-        if all(fingers_extended):
+        # Reference palm size
+        d_palm = math.sqrt((middle_mcp["x"] - wrist["x"])**2 + (middle_mcp["y"] - wrist["y"])**2)
+        if d_palm < 1e-5:
+            d_palm = 1.0
+
+        # Evaluate extension of the 4 fingers: Index (8), Middle (12), Ring (16), Pinky (20)
+        extended_count = 0
+        curled_count = 0
+
+        for tip_id, pip_id, mcp_id in zip(self.FINGERTIP_IDS, self.PIP_IDS,
+                                          [self.INDEX_MCP, self.MIDDLE_MCP, self.RING_MCP, self.PINKY_MCP]):
+            tip = landmarks[tip_id]
+            pip = landmarks[pip_id]
+            mcp = landmarks[mcp_id]
+
+            # Euclidean distances to wrist
+            d_tip_wrist = math.sqrt((tip["x"] - wrist["x"])**2 + (tip["y"] - wrist["y"])**2)
+            d_pip_wrist = math.sqrt((pip["x"] - wrist["x"])**2 + (pip["y"] - wrist["y"])**2)
+            d_mcp_wrist = math.sqrt((mcp["x"] - wrist["x"])**2 + (mcp["y"] - wrist["y"])**2)
+
+            # A finger is extended if its tip is significantly further from wrist than PIP/MCP
+            # Also check y-position when hand is vertical
+            is_extended = (d_tip_wrist > d_pip_wrist * 1.08) or (tip["y"] < pip["y"] and d_tip_wrist > d_mcp_wrist)
+            is_curled = (d_tip_wrist < d_pip_wrist * 1.02) or (tip["y"] > pip["y"] and d_tip_wrist < d_mcp_wrist * 1.25)
+
+            if is_extended and not is_curled:
+                extended_count += 1
+            elif is_curled:
+                curled_count += 1
+
+        # Evaluate Thumb extension relative to Pinky MCP (P17)
+        thumb_tip = landmarks[self.THUMB_TIP]
+        thumb_ip = landmarks[self.THUMB_IP]
+        pinky_mcp = landmarks[self.PINKY_MCP]
+        d_thumb_pinky = math.sqrt((thumb_tip["x"] - pinky_mcp["x"])**2 + (thumb_tip["y"] - pinky_mcp["y"])**2)
+        d_thumb_ip_pinky = math.sqrt((thumb_ip["x"] - pinky_mcp["x"])**2 + (thumb_ip["y"] - pinky_mcp["y"])**2)
+        thumb_extended = d_thumb_pinky > d_thumb_ip_pinky * 1.05
+
+        if thumb_extended:
+            extended_count += 1
+
+        # Classification decision rules
+        # Open Palm: At least 4 extended fingers (including thumb)
+        if extended_count >= 4 and curled_count <= 1:
             return "OPEN_PALM"
-        elif not any(fingers_extended):
+        # Closed Fist: All 4 main fingers curled, at most 1 (thumb) ambiguous
+        elif curled_count >= 4 or (curled_count >= 3 and extended_count == 0):
             return "CLOSED_FIST"
         else:
             return "UNKNOWN"
@@ -230,8 +272,8 @@ class GestureEngine:
         t_end = self.wrist_history[-1]["time"]
         dt = t_end - t_start
 
-        if dt <= 0.001 or dt > 0.4:
-            # Buffer too stale or time window invalid
+        if dt < 0.04 or dt > 0.40:
+            # Buffer too stale or time window too brief for realistic human hand swipe
             return None
 
         x_start = self.wrist_history[0]["x"]
@@ -243,15 +285,18 @@ class GestureEngine:
         if d_palm_avg < 1e-4:
             d_palm_avg = 0.15
 
-        # Horizontal velocity in screen coordinates / sec
+        # Horizontal velocity in screen fraction per second
         vx = dx / dt
-        # Palm-scaled velocity in palm-widths / sec
+        # Palm-scaled velocity in palm-widths per second
         vx_palm = vx / d_palm_avg
 
-        # Dual-criterion distance calibration:
-        # Standard screen velocity (> 0.55) OR palm-normalized velocity (> 3.8 palms/s with min 4% displacement)
-        is_swipe_right = (vx > 0.55) or (vx_palm > 3.8 and dx > 0.04)
-        is_swipe_left = (vx < -0.55) or (vx_palm < -3.8 and dx < -0.04)
+        # Strict dual-criterion thresholding:
+        # 1. Must have deliberate physical movement (|dx| >= 0.06 to filter camera jitter)
+        # 2. Must meet screen velocity threshold (|vx| >= 0.55 or |vx_palm| >= 3.2)
+        has_min_displacement = abs(dx) >= 0.06
+
+        is_swipe_right = has_min_displacement and (dx > 0) and ((vx > 0.55) or (vx_palm > 3.2))
+        is_swipe_left = has_min_displacement and (dx < 0) and ((vx < -0.55) or (vx_palm < -3.2))
 
         if is_swipe_right:
             self.last_swipe_time = now
@@ -367,19 +412,23 @@ class GestureEngine:
         wrist = primary_hand["raw"][self.WRIST]
         dwell_center = (wrist["px"], wrist["py"])
 
-        # Check for dynamic swipe if in OPEN_PALM
-        dx = primary_hand["raw"][self.MIDDLE_MCP]["x"] - primary_hand["raw"][self.WRIST]["x"]
-        dy = primary_hand["raw"][self.MIDDLE_MCP]["y"] - primary_hand["raw"][self.WRIST]["y"]
-        d_palm = math.sqrt(dx * dx + dy * dy)
+        # Dynamic swipe only processes when exactly 1 hand is active
+        # to prevent alternating hand index jumps in multi-hand scenarios
+        if hands_count == 1:
+            dx = primary_hand["raw"][self.MIDDLE_MCP]["x"] - primary_hand["raw"][self.WRIST]["x"]
+            dy = primary_hand["raw"][self.MIDDLE_MCP]["y"] - primary_hand["raw"][self.WRIST]["y"]
+            d_palm = math.sqrt(dx * dx + dy * dy)
 
-        self.update_wrist_trajectory(wrist, d_palm=d_palm)
-        swipe = self.detect_swipe(pose)
-        if swipe == "SWIPE_RIGHT":
-            action_trigger = "NEXT_STEP"
-            primary_gesture = "SWIPE_RIGHT"
-        elif swipe == "SWIPE_LEFT":
-            action_trigger = "PREV_STEP"
-            primary_gesture = "SWIPE_LEFT"
+            self.update_wrist_trajectory(wrist, d_palm=d_palm)
+            swipe = self.detect_swipe(pose)
+            if swipe == "SWIPE_RIGHT":
+                action_trigger = "NEXT_STEP"
+                primary_gesture = "SWIPE_RIGHT"
+            elif swipe == "SWIPE_LEFT":
+                action_trigger = "PREV_STEP"
+                primary_gesture = "SWIPE_LEFT"
+        else:
+            self.wrist_history.clear()
 
         # 3. Check Closed Fist Dwell-Time for Tare
         if pose == "CLOSED_FIST":
@@ -394,8 +443,9 @@ class GestureEngine:
             else:
                 dwell_progress = 0.0
         else:
-            self.fist_dwell_counter = max(0, self.fist_dwell_counter - 2)
-            dwell_progress = 0.0
+            # Gentle decay (drops by 1 instead of 2) for smooth, non-flickering dwell meter
+            self.fist_dwell_counter = max(0, self.fist_dwell_counter - 1)
+            dwell_progress = max(0.0, self.fist_dwell_counter / self.fist_dwell_max)
 
         return {
             "hands_count": hands_count,

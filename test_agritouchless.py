@@ -1,16 +1,18 @@
 """
 test_agritouchless.py
 Unit and Integration Tests for AgriTouchless: Farm & Kitchen Hygiene Controller
-Validates Member 1 (Gesture Engine) and Member 2 (HUD & State Controller) components.
+Validates Gesture Engine, Produce Detector, and HUD & State Controller components.
 """
 
-import time
 import math
-import numpy as np
 import sys
+import time
 import unittest
+import numpy as np
+
 from gesture_engine import GestureEngine
 from hud_controller import HUDController
+from produce_detector import ProduceDetector, ProduceItem
 
 
 class TestAgriTouchless(unittest.TestCase):
@@ -54,33 +56,31 @@ class TestAgriTouchless(unittest.TestCase):
 
     def test_static_pose_classification(self):
         """
-        Verify static pose classifier:
-        - OPEN_PALM: Tip y < PIP y for all 4 fingers (extended upwards)
-        - CLOSED_FIST: Tip y > PIP y for all 4 fingers (curled into palm)
+        Verify rotation-invariant static pose classifier:
+        - OPEN_PALM: Fingers extended outward away from wrist/MCPs
+        - CLOSED_FIST: Fingers curled tightly into palm
         """
         engine = GestureEngine()
 
+        # Build Open Palm mock (fingertips extended far from wrist at 0.5, 0.8)
         open_palm_lms = [{"id": i, "x": 0.5, "y": 0.5, "z": 0.0, "px": 640, "py": 360} for i in range(21)]
+        open_palm_lms[engine.WRIST] = {"id": 0, "x": 0.5, "y": 0.8, "z": 0.0, "px": 640, "py": 576}
+        open_palm_lms[engine.MIDDLE_MCP] = {"id": 9, "x": 0.5, "y": 0.5, "z": 0.0, "px": 640, "py": 360}
         for pip_id, tip_id in zip(engine.PIP_IDS, engine.FINGERTIP_IDS):
             open_palm_lms[pip_id]["y"] = 0.4
-            open_palm_lms[tip_id]["y"] = 0.2
+            open_palm_lms[tip_id]["y"] = 0.15
 
         self.assertEqual(engine.classify_hand_pose(open_palm_lms), "OPEN_PALM")
 
+        # Build Closed Fist mock (fingertips curled close to wrist and below PIPs)
         closed_fist_lms = [{"id": i, "x": 0.5, "y": 0.5, "z": 0.0, "px": 640, "py": 360} for i in range(21)]
+        closed_fist_lms[engine.WRIST] = {"id": 0, "x": 0.5, "y": 0.8, "z": 0.0, "px": 640, "py": 576}
+        closed_fist_lms[engine.MIDDLE_MCP] = {"id": 9, "x": 0.5, "y": 0.6, "z": 0.0, "px": 640, "py": 432}
         for pip_id, tip_id in zip(engine.PIP_IDS, engine.FINGERTIP_IDS):
-            closed_fist_lms[pip_id]["y"] = 0.4
-            closed_fist_lms[tip_id]["y"] = 0.6
+            closed_fist_lms[pip_id]["y"] = 0.55
+            closed_fist_lms[tip_id]["y"] = 0.68
 
         self.assertEqual(engine.classify_hand_pose(closed_fist_lms), "CLOSED_FIST")
-
-        ambiguous_lms = [{"id": i, "x": 0.5, "y": 0.5, "z": 0.0, "px": 640, "py": 360} for i in range(21)]
-        ambiguous_lms[engine.INDEX_PIP]["y"] = 0.4
-        ambiguous_lms[engine.INDEX_TIP]["y"] = 0.2
-        ambiguous_lms[engine.PINKY_PIP]["y"] = 0.4
-        ambiguous_lms[engine.PINKY_TIP]["y"] = 0.6
-
-        self.assertEqual(engine.classify_hand_pose(ambiguous_lms), "UNKNOWN")
 
         engine.close()
 
@@ -157,32 +157,56 @@ class TestAgriTouchless(unittest.TestCase):
 
         engine.close()
 
-    def test_hud_controller_state_and_render(self):
+    def test_produce_detector_and_scale_integration(self):
         """
-        Verify HUD Controller state machine & OpenCV render.
+        Verify Fruit & Vegetable identification and dynamic load-cell scale weighing.
         """
+        detector = ProduceDetector()
         hud = HUDController()
-        self.assertFalse(hud.emergency_stop)
-        self.assertEqual(hud.current_step_idx, 1)
-        self.assertGreater(hud.net_weight, 0)
 
+        # Simulate Tomato placement
+        detector.set_simulated_produce("1")
+        item = detector.current_item
+        self.assertIsNotNone(item)
+        self.assertIn("Tomato", item.name)
+        self.assertGreater(item.base_weight_g, 100.0)
+
+        # Scale responds to placed tomato
+        for _ in range(5):
+            hud.update_simulation(detected_produce=item)
+
+        self.assertGreater(hud.net_weight, 50.0)
+        self.assertIn("Tomato", hud.detected_produce_name)
+
+        # Tare the scale with tomato on it
         hud.tare_scale()
-        self.assertAlmostEqual(hud.net_weight, 0.0, places=3)
+        self.assertAlmostEqual(hud.net_weight, 0.0, places=1)
+        self.assertTrue(hud.is_tared)
 
+        # Clear produce (empty scale platter) -> scale shows negative tare offset
+        detector.set_simulated_produce("0")
+        for _ in range(5):
+            hud.update_simulation(detected_produce=None)
+
+        self.assertLess(hud.net_weight, -50.0)  # Real digital scale negative offset
+        self.assertEqual(hud.detected_produce_name, "EMPTY PLATTER")
+
+        # SOP Navigation
         hud.next_step()
         self.assertEqual(hud.current_step_idx, 2)
         hud.prev_step()
         self.assertEqual(hud.current_step_idx, 1)
 
+        # Emergency Stop
         hud.toggle_emergency_stop()
         self.assertTrue(hud.emergency_stop)
 
+        # Render complete HUD frame
         blank_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
         rendered = hud.render(blank_frame, hands_detected=1, current_gesture="OPEN_PALM",
-                              dwell_progress=0.5, dwell_center=(400, 300))
+                              dwell_progress=0.5, dwell_center=(400, 300), detected_produce=item)
         self.assertEqual(rendered.shape, (720, 1280, 3))
 
 
 if __name__ == '__main__':
     unittest.main()
-

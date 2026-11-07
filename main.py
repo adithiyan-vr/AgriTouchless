@@ -13,6 +13,7 @@ import numpy as np
 
 from gesture_engine import GestureEngine
 from hud_controller import HUDController
+from produce_detector import ProduceDetector
 
 
 def run_controller():
@@ -20,11 +21,12 @@ def run_controller():
     print("  AgriTouchless: Farm & Kitchen Hygiene Controller")
     print("  TinkerHub Saturday Hack Night | Season 02: AgriTech & Food")
     print("=" * 65)
-    print("Initializing Computer Vision Gesture Engine & HUD Controller...")
+    print("Initializing Computer Vision Gesture Engine, Produce Detector & HUD...")
 
-    # Initialize Gesture Engine and HUD Controller
+    # Initialize Gesture Engine, Produce Detector, and HUD Controller
     engine = GestureEngine(max_num_hands=2, min_detection_confidence=0.7, min_tracking_confidence=0.5)
     hud = HUDController()
+    produce_detector = ProduceDetector(roi_box=(60, 160, 680, 640))
 
     target_width, target_height = 1280, 720
 
@@ -82,7 +84,7 @@ def run_controller():
             if frame.shape[1] != target_width or frame.shape[0] != target_height:
                 frame = cv2.resize(frame, (target_width, target_height))
 
-            # Run Computer Vision analysis
+            # Run Computer Vision gesture analysis
             analysis = engine.analyze_frame(frame, width=target_width, height=target_height)
 
             hands_count = analysis["hands_count"]
@@ -90,6 +92,20 @@ def run_controller():
             action = analysis["action_trigger"]
             dwell_progress = analysis["dwell_progress"]
             dwell_center = analysis["dwell_center"]
+
+            # Extract hand bounding boxes to prevent hand skin false-positives in produce scanner
+            hand_bboxes = []
+            if analysis["raw_results"].multi_hand_landmarks:
+                for hand_lms in analysis["raw_results"].multi_hand_landmarks:
+                    xs = [int(lm.x * target_width) for lm in hand_lms.landmark]
+                    ys = [int(lm.y * target_height) for lm in hand_lms.landmark]
+                    bx1, bx2 = max(0, min(xs) - 25), min(target_width, max(xs) + 25)
+                    by1, by2 = max(0, min(ys) - 25), min(target_height, max(ys) + 25)
+                    hand_bboxes.append((bx1, by1, bx2 - bx1, by2 - by1))
+
+            # Run Fruit & Vegetable Object Detection & Scale Weight Estimation
+            detected_produce = produce_detector.detect_produce(frame, hand_bboxes=hand_bboxes)
+            produce_detector.draw_inspection_zone(frame, detected_produce)
 
             # Dispatch Touchless Actions to HUD State Machine
             if action == "TARE":
@@ -119,13 +135,14 @@ def run_controller():
                 fps_smooth = 0.9 * fps_smooth + 0.1 * current_fps
             hud.fps = fps_smooth
 
-            # Render complete OpenCV HUD overlay
+            # Render complete OpenCV HUD overlay with produce integration
             display_frame = hud.render(
                 frame,
                 hands_detected=hands_count,
                 current_gesture=primary_gesture,
                 dwell_progress=dwell_progress,
-                dwell_center=dwell_center
+                dwell_center=dwell_center,
+                detected_produce=detected_produce
             )
 
             cv2.imshow(window_name, display_frame)
@@ -142,6 +159,14 @@ def run_controller():
                 hud.prev_step()
             elif key == ord('e'):
                 hud.toggle_emergency_stop()
+            elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5'), ord('6')]:
+                # Simulate fruit/vegetable placement
+                produce_detector.set_simulated_produce(chr(key))
+                print(f"[PRODUCE SIMULATION] Placed {produce_detector.current_item.name} on scale")
+            elif key in [ord('0'), ord('c')]:
+                # Clear scale platter
+                produce_detector.set_simulated_produce("0")
+                print("[PRODUCE SIMULATION] Cleared produce from scale platter")
 
             frame_idx += 1
             if "AGRI_TEST_FRAMES" in os.environ and frame_idx >= int(os.environ["AGRI_TEST_FRAMES"]):

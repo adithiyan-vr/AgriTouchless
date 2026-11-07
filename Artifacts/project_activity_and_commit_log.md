@@ -28,6 +28,7 @@ Use this file to track real-time progress, architectural decisions, and Git comm
 | **23:15** | Member 1 & 2 | `main.py` | Added automated verification testing hook (`AGRI_TEST_FRAMES`), synthetic camera feed fallback for headless/remote runs, and verified end-to-end execution. | `feat(test): add verification test mode and graceful exit hook` |
 | **23:30** | Member 1 & 2 | `README.md` | Crafted comprehensive project documentation with problem statement, system architecture, math models, quickstart, and demo instructions. | `docs(readme): add comprehensive project documentation and setup guide` |
 | **23:45** | Member 1 & 2 | `TODO.md` & `LOG.md` | Finalized milestone tracker and build log; verified git history compliance with mandatory submission rules. | `docs: update build log and master to-do list` |
+| **00:15** | Member 1 & 2 | `produce_detector.py`, `hud_controller.py`, `gesture_engine.py` | Built Fruit & Vegetable Vision Identifier, dynamic load-cell scale physics, and rotation-invariant Euclidean gesture heuristics. | `feat(vision): add fruit & vegetable identifier, fix digital scale, and harden gesture recognition` |
 
 ---
 
@@ -41,3 +42,7 @@ Use this file to track real-time progress, architectural decisions, and Git comm
   * *Fix (Member 1):* Pinned virtual environment to `mediapipe==0.10.14` with compatible `protobuf==4.25.9` and implemented defensive fallback handling in `GestureEngine` so unit tests execute cleanly across all environments.
 * **Issue 4 (Camera Availability in Headless / Remote Testing):** Running verification in environments without a physical webcam connected could throw index errors on `cv2.VideoCapture(0)`.
   * *Fix (Member 2):* Added an automatic synthetic frame generator displaying a dark greenhouse work surface with keyboard shortcuts (`t`, `n`, `p`, `e`, `q`) to allow autonomous testing and seamless evaluation.
+* **Issue 5 (Faulty Hand Gesture Angles):** When hands were angled diagonally or pointing toward the camera, 2D Y-coordinate checks produced false negatives or flickering poses.
+  * *Fix (Member 1):* Replaced linear Y checks with rotation-invariant 3D Euclidean distance ratios from fingertips to Wrist ($P_0$) and MCP joints. Enforced minimum physical displacement ($|dx| \ge 0.06$) to eliminate camera tremor false swipes, and restricted swipe tracking to single-hand frames to prevent coordinate mixing across alternating hands.
+* **Issue 6 (Static Digital Scale & Produce Identification):** Digital scale previously ran on a static baseline without recognizing agricultural harvest items.
+  * *Fix (Member 1 & 2):* Implemented [`produce_detector.py`](file:///c:/Users/user/Documents/Hackathon/Thinkerhub\AgriTouchless/produce_detector.py) providing real-time HSV + morphological segmentation for Tomatoes, Apples, Bananas, Carrots, Potatoes, and Leafy Greens. Linked detected produce area directly to load-cell scale physics with realistic settling easing, gross/net readouts, and negative tare offsets.

@@ -47,10 +47,14 @@ class HUDController:
     COLOR_ACCENT = (255, 165, 0)      # Cyan / Sky Accent
 
     def __init__(self):
-        # Digital Scale state
-        self.raw_weight = 1250.0  # Base simulated harvest weight in grams
-        self.tare_offset = 0.0
+        # Digital Scale state with dynamic load-cell simulation
+        self.raw_weight = 0.0       # Gross load-cell weight
+        self.target_weight = 0.0    # Target weight of placed produce
+        self.tare_offset = 0.0      # Stored tare baseline
+        self.is_tared = False
         self.last_weight_update = time.time()
+        self.detected_produce_name = "EMPTY PLATTER"
+        self.detected_produce_category = "Awaiting Produce in Zone"
 
         # SOP / Recipe state
         self.steps = [
@@ -91,8 +95,9 @@ class HUDController:
             pass
 
     def tare_scale(self):
-        """Zero out the digital scale."""
+        """Zero out the digital scale with current load as tare offset."""
         self.tare_offset = self.raw_weight
+        self.is_tared = True
         self.play_sound("tare")
 
     def next_step(self):
@@ -114,19 +119,32 @@ class HUDController:
         self.emergency_stop = not self.emergency_stop
         self.play_sound("alert")
 
-    def update_simulation(self):
-        """Simulate realistic slight scale sensor jitter."""
+    def update_simulation(self, detected_produce=None):
+        """
+        Simulate realistic load-cell settling physics and micro-sensor noise.
+        """
+        if detected_produce:
+            self.target_weight = detected_produce.base_weight_g
+            self.detected_produce_name = detected_produce.name
+            self.detected_produce_category = detected_produce.category
+        else:
+            self.target_weight = 0.0
+            self.detected_produce_name = "EMPTY PLATTER"
+            self.detected_produce_category = "Awaiting Produce in Zone"
+
         if not self.emergency_stop:
-            now = time.time()
-            if now - self.last_weight_update > 0.15:
-                # Add micro-fluctuation (+/- 1.5g)
-                noise = random.uniform(-1.5, 1.5)
-                self.raw_weight = max(0.0, self.raw_weight + noise)
-                self.last_weight_update = now
+            diff = self.target_weight - self.raw_weight
+            self.raw_weight += diff * 0.28
+            # Micro-fluctuation (+/- 0.15g)
+            noise = random.uniform(-0.15, 0.15) if abs(self.raw_weight) > 1.0 else random.uniform(-0.04, 0.04)
+            self.raw_weight += noise
 
     @property
     def net_weight(self) -> float:
-        return max(0.0, self.raw_weight - self.tare_offset)
+        val = self.raw_weight - self.tare_offset
+        if abs(val) < 0.2:
+            return 0.0
+        return val
 
     def draw_circular_progress(self, frame: np.ndarray, center: tuple, progress: float):
         """
@@ -149,7 +167,7 @@ class HUDController:
 
     def render(self, frame: np.ndarray, hands_detected: int = 0,
                current_gesture: str = "NONE", dwell_progress: float = 0.0,
-               dwell_center: tuple = None) -> np.ndarray:
+               dwell_center: tuple = None, detected_produce=None) -> np.ndarray:
         """
         Renders the complete HUD overlay on top of the webcam frame.
         Target resolution: 1280x720.
@@ -159,15 +177,15 @@ class HUDController:
             frame = cv2.resize(frame, (1280, 720))
             h, w = 720, 1280
 
-        self.update_simulation()
+        self.update_simulation(detected_produce)
 
         overlay = frame.copy()
 
         # 1. Top Status Bar (y: 0 to 50)
         cv2.rectangle(overlay, (0, 0), (w, 50), self.COLOR_PANEL_BG, -1)
 
-        # 2. Digital Scale Card (x: 760 to 1250, y: 70 to 240)
-        cv2.rectangle(overlay, (760, 70), (1250, 240), self.COLOR_PANEL_BG, -1)
+        # 2. Digital Scale Card (x: 760 to 1250, y: 65 to 245)
+        cv2.rectangle(overlay, (760, 65), (1250, 245), self.COLOR_PANEL_BG, -1)
 
         # 3. SOP / Recipe Step Card (x: 760 to 1250, y: 260 to 520)
         cv2.rectangle(overlay, (760, 260), (1250, 520), self.COLOR_PANEL_BG, -1)
@@ -180,7 +198,7 @@ class HUDController:
         cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
         # Panel Borders & Dividers
-        cv2.rectangle(frame, (760, 70), (1250, 240), (70, 70, 70), 2)
+        cv2.rectangle(frame, (760, 65), (1250, 245), (70, 70, 70), 2)
         cv2.rectangle(frame, (760, 260), (1250, 520), (70, 70, 70), 2)
         cv2.line(frame, (0, 50), (w, 50), (90, 90, 90), 2)
         cv2.line(frame, (0, 660), (w, 660), (90, 90, 90), 2)
@@ -200,16 +218,43 @@ class HUDController:
         cv2.putText(frame, gesture_text, (940, 33), cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_PROGRESS, 2, cv2.LINE_AA)
 
         # --- Digital Scale Simulator Card ---
-        cv2.putText(frame, "DIGITAL SCALE SIMULATOR", (780, 105),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.7, self.COLOR_WHITE, 2, cv2.LINE_AA)
-        
-        weight_str = f"{self.net_weight:,.1f} g"
-        cv2.putText(frame, f"Weight: {weight_str}", (780, 160),
-                    cv2.FONT_HERSHEY_DUPLEX, 1.1, self.COLOR_SAFE if self.net_weight == 0 else self.COLOR_PROGRESS, 2, cv2.LINE_AA)
-        
-        tare_note = "[Hold Fist 1s to TARE/ZERO]"
-        cv2.putText(frame, tare_note, (780, 205),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.55, self.COLOR_GRAY, 1, cv2.LINE_AA)
+        cv2.putText(frame, "DIGITAL SCALE SIMULATOR", (780, 95),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.65, self.COLOR_WHITE, 2, cv2.LINE_AA)
+
+        # Display detected produce name & status tag
+        cv2.putText(frame, f"Item: {self.detected_produce_name}", (780, 125),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.55, (0, 230, 255), 1, cv2.LINE_AA)
+
+        net_w = self.net_weight
+        weight_str = f"{net_w:+,.1f} g" if abs(net_w) > 0.0 else "0.0 g"
+
+        # Badge decision
+        if abs(net_w) < 0.3:
+            badge_text = "[TARED / ZEROED]" if self.is_tared else "[EMPTY PLATTER]"
+            badge_color = self.COLOR_SAFE
+            w_color = self.COLOR_SAFE
+        elif net_w > 0.3:
+            badge_text = "[NET READING]"
+            badge_color = self.COLOR_PROGRESS
+            w_color = self.COLOR_PROGRESS
+        else:
+            badge_text = "[ITEM REMOVED]"
+            badge_color = (120, 120, 255)
+            w_color = (120, 120, 255)
+
+        cv2.putText(frame, f"Weight: {weight_str}", (780, 168),
+                    cv2.FONT_HERSHEY_DUPLEX, 1.05, w_color, 2, cv2.LINE_AA)
+        cv2.putText(frame, badge_text, (1080, 168),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.50, badge_color, 1, cv2.LINE_AA)
+
+        # Gross & Tare readout
+        gross_info = f"Gross: {self.raw_weight:,.1f} g  |  Tare: {self.tare_offset:,.1f} g"
+        cv2.putText(frame, gross_info, (780, 202),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.48, self.COLOR_GRAY, 1, cv2.LINE_AA)
+
+        tare_note = "[Hold Fist 1s: Tare | Keys 1-6: Place Fruit/Veg | 0: Clear]"
+        cv2.putText(frame, tare_note, (780, 230),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.42, (180, 180, 180), 1, cv2.LINE_AA)
 
         # --- Active SOP / Recipe Card ---
         step_title = f"ACTIVE SOP / RECIPE STEP ({self.current_step_idx + 1}/{len(self.steps)})"

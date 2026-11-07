@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from hud_controller import HUDController
+from produce_detector import ProduceDetector
 
 
 def create_demo_video(output_filename="demo_preview.mp4", duration_sec=10, fps=30):
@@ -23,7 +24,8 @@ def create_demo_video(output_filename="demo_preview.mp4", duration_sec=10, fps=3
     out = cv2.VideoWriter(output_filename, fourcc, fps, (width, height))
 
     hud = HUDController()
-    hud.raw_weight = 1250.0
+    produce_detector = ProduceDetector(roi_box=(60, 160, 680, 640))
+    produce_detector.set_simulated_produce("1")  # Grade-A Tomato on scale
 
     # Synthetic hand center position
     wrist_x, wrist_y = 450, 420
@@ -106,6 +108,10 @@ def create_demo_video(output_filename="demo_preview.mp4", duration_sec=10, fps=3
             cv2.putText(frame, "DEMO: Two-Hand 'Hands Up' -> EMERGENCY STOP TRIGGERED", (80, 100),
                         cv2.FONT_HERSHEY_DUPLEX, 0.75, (80, 80, 255), 2, cv2.LINE_AA)
 
+        # Render produce inspection zone
+        detected_item = produce_detector.current_item
+        produce_detector.draw_inspection_zone(frame, detected_item)
+
         # Render HUD overlay on top of synthetic frame
         hud.fps = float(fps)
         rendered = hud.render(
@@ -113,7 +119,8 @@ def create_demo_video(output_filename="demo_preview.mp4", duration_sec=10, fps=3
             hands_detected=hands_count,
             current_gesture=current_gesture,
             dwell_progress=dwell_progress,
-            dwell_center=dwell_center
+            dwell_center=dwell_center,
+            detected_produce=detected_item
         )
 
         out.write(rendered)
