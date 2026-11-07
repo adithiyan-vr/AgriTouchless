@@ -57,16 +57,25 @@ class GestureEngine:
         """
         Initialize the MediaPipe Hands pipeline, 5-frame rolling buffer, and cooldown timers.
         """
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_drawing_styles = mp.solutions.drawing_styles
+        self.mp_hands = None
+        self.mp_drawing = None
+        self.mp_drawing_styles = None
+        self.hands = None
 
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=max_num_hands,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
-        )
+        try:
+            if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
+                self.mp_hands = mp.solutions.hands
+                self.mp_drawing = mp.solutions.drawing_utils
+                self.mp_drawing_styles = mp.solutions.drawing_styles
+
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=max_num_hands,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+        except Exception as e:
+            print(f"[GestureEngine] Warning during MediaPipe initialization: {e}")
 
         # 5-Frame Rolling Buffer for Wrist Velocity (dx/dt)
         self.wrist_history = deque(maxlen=5)
@@ -92,6 +101,11 @@ class GestureEngine:
         """
         Convert BGR frame to RGB and process with MediaPipe Hands.
         """
+        if self.hands is None:
+            class _DummyResults:
+                multi_hand_landmarks = None
+            return _DummyResults()
+
         rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb_frame.flags.writeable = False
         results = self.hands.process(rgb_frame)
@@ -192,6 +206,7 @@ class GestureEngine:
         """
         Dynamic Swipe Recognition:
         Computes wrist horizontal velocity (dx/dt) over the 5-frame rolling buffer.
+        Calibrated with palm-scale normalization for reliable 1m - 2m distance operation.
         Requirements:
         - Hand must be in 'OPEN_PALM' pose
         - 0.8s cooldown elapsed to prevent accidental reverse swipes
@@ -223,15 +238,26 @@ class GestureEngine:
         x_end = self.wrist_history[-1]["x"]
         dx = x_end - x_start
 
-        # Calculate horizontal velocity vx = dx / dt
-        # In mirrored frame, positive dx indicates motion toward the user's right
-        vx = dx / dt
+        # Average palm reference size over buffer
+        d_palm_avg = sum(item.get("d_palm", 0.15) for item in self.wrist_history) / len(self.wrist_history)
+        if d_palm_avg < 1e-4:
+            d_palm_avg = 0.15
 
-        if vx > self.swipe_threshold:
+        # Horizontal velocity in screen coordinates / sec
+        vx = dx / dt
+        # Palm-scaled velocity in palm-widths / sec
+        vx_palm = vx / d_palm_avg
+
+        # Dual-criterion distance calibration:
+        # Standard screen velocity (> 0.55) OR palm-normalized velocity (> 3.8 palms/s with min 4% displacement)
+        is_swipe_right = (vx > 0.55) or (vx_palm > 3.8 and dx > 0.04)
+        is_swipe_left = (vx < -0.55) or (vx_palm < -3.8 and dx < -0.04)
+
+        if is_swipe_right:
             self.last_swipe_time = now
             self.wrist_history.clear()
             return "SWIPE_RIGHT"
-        elif vx < -self.swipe_threshold:
+        elif is_swipe_left:
             self.last_swipe_time = now
             self.wrist_history.clear()
             return "SWIPE_LEFT"
@@ -383,14 +409,16 @@ class GestureEngine:
 
     def draw_skeleton(self, frame, hand_landmarks):
         """Draw hand skeleton overlay on frame."""
-        self.mp_drawing.draw_landmarks(
-            frame,
-            hand_landmarks,
-            self.mp_hands.HAND_CONNECTIONS,
-            self.mp_drawing_styles.get_default_hand_landmarks_style(),
-            self.mp_drawing_styles.get_default_hand_connections_style()
-        )
+        if self.mp_drawing and hand_landmarks:
+            self.mp_drawing.draw_landmarks(
+                frame,
+                hand_landmarks,
+                self.mp_hands.HAND_CONNECTIONS,
+                self.mp_drawing_styles.get_default_hand_landmarks_style(),
+                self.mp_drawing_styles.get_default_hand_connections_style()
+            )
 
     def close(self):
         """Release MediaPipe resources."""
-        self.hands.close()
+        if self.hands is not None:
+            self.hands.close()
