@@ -76,6 +76,18 @@ class GestureEngine:
         self.swipe_cooldown = 0.8    # 0.8s cooldown to prevent bounce-back accidental swipes
         self.last_swipe_time = 0.0
 
+        # Two-Hand Fail-Safe Emergency Stop Tracker
+        self.two_hand_stop_frames = 0
+        self.two_hand_threshold = 12       # Frames required (~0.4s) to confirm fail-safe
+        self.last_emergency_toggle = 0.0
+        self.emergency_cooldown = 1.5      # 1.5s cooldown between toggle state changes
+
+        # Fist Tare Dwell-Time Debouncing
+        self.fist_dwell_counter = 0
+        self.fist_dwell_max = 30           # 30 frames (~1.0s at 30 FPS)
+        self.last_tare_time = 0.0
+        self.tare_cooldown = 1.5           # 1.5s cooldown after tare trigger
+
     def process_frame(self, frame_bgr):
         """
         Convert BGR frame to RGB and process with MediaPipe Hands.
@@ -225,6 +237,149 @@ class GestureEngine:
             return "SWIPE_LEFT"
 
         return None
+
+    def detect_two_hand_stop(self, poses: List[str]) -> bool:
+        """
+        Two-Hand 'Hands Up' Fail-Safe Detector:
+        Requires both hands visible and classified as 'OPEN_PALM'.
+        Debounced over consecutive frames with a 1.5s cooldown to prevent toggling flutter.
+        """
+        now = time.time()
+        is_both_open = len(poses) == 2 and all(p == "OPEN_PALM" for p in poses)
+
+        if is_both_open:
+            self.two_hand_stop_frames += 1
+            if self.two_hand_stop_frames >= self.two_hand_threshold:
+                if now - self.last_emergency_toggle > self.emergency_cooldown:
+                    self.last_emergency_toggle = now
+                    self.two_hand_stop_frames = 0
+                    return True
+        else:
+            self.two_hand_stop_frames = max(0, self.two_hand_stop_frames - 2)
+
+        return False
+
+    def analyze_frame(self, frame_bgr, width: int = 1280, height: int = 720) -> Dict:
+        """
+        High-level pipeline method integrating:
+        1. MediaPipe hand landmark detection
+        2. Normalization relative to wrist and palm size
+        3. Static pose classification (OPEN_PALM / CLOSED_FIST)
+        4. Dynamic velocity tracking (SWIPE_LEFT / SWIPE_RIGHT)
+        5. Fist dwell-time accumulator (30 frames tare trigger)
+        6. Two-hand fail-safe emergency pause
+
+        Returns structured analysis result dict:
+        {
+            "hands_count": int,
+            "poses": List[str],
+            "primary_gesture": str,
+            "action_trigger": Optional[str],  # "TARE", "NEXT_STEP", "PREV_STEP", "EMERGENCY_STOP", None
+            "dwell_progress": float,          # 0.0 to 1.0
+            "dwell_center": Optional[Tuple[int, int]],
+            "raw_results": results
+        }
+        """
+        results = self.process_frame(frame_bgr)
+        now = time.time()
+
+        action_trigger = None
+        dwell_progress = 0.0
+        dwell_center = None
+        poses = []
+        primary_gesture = "NONE"
+
+        if not results.multi_hand_landmarks:
+            # Decay counters when hands are not in frame
+            self.fist_dwell_counter = max(0, self.fist_dwell_counter - 2)
+            self.two_hand_stop_frames = max(0, self.two_hand_stop_frames - 2)
+            self.wrist_history.clear()
+            return {
+                "hands_count": 0,
+                "poses": [],
+                "primary_gesture": "NONE",
+                "action_trigger": None,
+                "dwell_progress": 0.0,
+                "dwell_center": None,
+                "raw_results": results
+            }
+
+        hands_count = len(results.multi_hand_landmarks)
+
+        # Process each detected hand
+        hands_data = []
+        for hand_lms in results.multi_hand_landmarks:
+            raw_lms = self.extract_landmarks(hand_lms, width=width, height=height)
+            norm_lms = self.normalize_landmarks(raw_lms)
+            pose = self.classify_hand_pose(raw_lms)
+            poses.append(pose)
+            hands_data.append({
+                "raw": raw_lms,
+                "norm": norm_lms,
+                "pose": pose,
+                "lms": hand_lms
+            })
+
+        # 1. Check Two-Hand Emergency Stop
+        if hands_count == 2 and self.detect_two_hand_stop(poses):
+            action_trigger = "EMERGENCY_STOP"
+            primary_gesture = "EMERGENCY_STOP"
+            return {
+                "hands_count": 2,
+                "poses": poses,
+                "primary_gesture": primary_gesture,
+                "action_trigger": action_trigger,
+                "dwell_progress": 0.0,
+                "dwell_center": None,
+                "raw_results": results
+            }
+
+        # 2. Single hand (or primary hand) processing
+        primary_hand = hands_data[0]
+        pose = primary_hand["pose"]
+        primary_gesture = pose
+        wrist = primary_hand["raw"][self.WRIST]
+        dwell_center = (wrist["px"], wrist["py"])
+
+        # Check for dynamic swipe if in OPEN_PALM
+        dx = primary_hand["raw"][self.MIDDLE_MCP]["x"] - primary_hand["raw"][self.WRIST]["x"]
+        dy = primary_hand["raw"][self.MIDDLE_MCP]["y"] - primary_hand["raw"][self.WRIST]["y"]
+        d_palm = math.sqrt(dx * dx + dy * dy)
+
+        self.update_wrist_trajectory(wrist, d_palm=d_palm)
+        swipe = self.detect_swipe(pose)
+        if swipe == "SWIPE_RIGHT":
+            action_trigger = "NEXT_STEP"
+            primary_gesture = "SWIPE_RIGHT"
+        elif swipe == "SWIPE_LEFT":
+            action_trigger = "PREV_STEP"
+            primary_gesture = "SWIPE_LEFT"
+
+        # 3. Check Closed Fist Dwell-Time for Tare
+        if pose == "CLOSED_FIST":
+            if now - self.last_tare_time > self.tare_cooldown:
+                self.fist_dwell_counter += 1
+                dwell_progress = min(1.0, self.fist_dwell_counter / self.fist_dwell_max)
+                if self.fist_dwell_counter >= self.fist_dwell_max:
+                    action_trigger = "TARE"
+                    self.last_tare_time = now
+                    self.fist_dwell_counter = 0
+                    dwell_progress = 1.0
+            else:
+                dwell_progress = 0.0
+        else:
+            self.fist_dwell_counter = max(0, self.fist_dwell_counter - 2)
+            dwell_progress = 0.0
+
+        return {
+            "hands_count": hands_count,
+            "poses": poses,
+            "primary_gesture": primary_gesture,
+            "action_trigger": action_trigger,
+            "dwell_progress": dwell_progress,
+            "dwell_center": dwell_center,
+            "raw_results": results
+        }
 
     def draw_skeleton(self, frame, hand_landmarks):
         """Draw hand skeleton overlay on frame."""
