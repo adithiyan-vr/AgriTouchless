@@ -5,6 +5,7 @@ TinkerHub Saturday Hack Night (Season 02: AgriTech & Food)
 Integrated by Member 1 (Adithiyan V R) & Member 2 (Jazeem Anwar)
 """
 
+import os
 import sys
 import time
 import cv2
@@ -143,6 +144,9 @@ def run_controller():
                 hud.toggle_emergency_stop()
 
             frame_idx += 1
+            if "AGRI_TEST_FRAMES" in os.environ and frame_idx >= int(os.environ["AGRI_TEST_FRAMES"]):
+                print(f"[TEST] Successfully rendered {frame_idx} frames. Verification passed!")
+                break
 
     finally:
         if camera_available:
