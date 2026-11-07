@@ -77,13 +77,14 @@ class GestureEngine:
         except Exception as e:
             print(f"[GestureEngine] Warning during MediaPipe initialization: {e}")
 
-        # 5-Frame Rolling Buffer for Wrist Velocity (dx/dt)
+        # 5-Frame Rolling Buffer for Palm/Wrist Velocity (dx/dt)
         self.wrist_history = deque(maxlen=5)
 
         # Swipe parameters & debouncing
-        self.swipe_threshold = 0.75  # Normalized horizontal velocity threshold (screen width/sec)
+        self.swipe_threshold = 0.40  # Normalized horizontal velocity threshold (screen width/sec)
         self.swipe_cooldown = 0.8    # 0.8s cooldown to prevent bounce-back accidental swipes
         self.last_swipe_time = 0.0
+        self.no_hand_frames = 0
 
         # Two-Hand Fail-Safe Emergency Stop Tracker
         self.two_hand_stop_frames = 0
@@ -232,26 +233,30 @@ class GestureEngine:
         else:
             return "UNKNOWN"
 
-    def update_wrist_trajectory(self, wrist_landmark: Dict[str, float], d_palm: float = 1.0) -> None:
+    def update_wrist_trajectory(self, palm_coords: Dict[str, float], d_palm: float = 1.0) -> None:
         """
-        Record wrist horizontal coordinate and timestamp into the 5-frame rolling buffer.
+        Record palm/wrist coordinate, velocity timestamp, and distance into rolling buffer.
+        Tracks palm center (or wrist) with both X and Y coordinates to verify horizontal dominance.
         """
         now = time.time()
         self.wrist_history.append({
             "time": now,
-            "x": wrist_landmark["x"],
-            "px": wrist_landmark["px"],
+            "x": palm_coords["x"],
+            "y": palm_coords.get("y", 0.5),
+            "px": palm_coords.get("px", int(palm_coords["x"] * 1280)),
+            "py": palm_coords.get("py", int(palm_coords.get("y", 0.5) * 720)),
             "d_palm": max(1e-5, d_palm)
         })
 
     def detect_swipe(self, pose: str) -> Optional[str]:
         """
-        Dynamic Swipe Recognition:
-        Computes wrist horizontal velocity (dx/dt) over the 5-frame rolling buffer.
-        Calibrated with palm-scale normalization for reliable 1m - 2m distance operation.
+        Robust Dynamic Swipe Recognition:
+        Evaluates horizontal displacement and velocity over recent frames.
         Requirements:
-        - Hand must be in 'OPEN_PALM' pose
-        - 0.8s cooldown elapsed to prevent accidental reverse swipes
+        - Hand cannot be in 'CLOSED_FIST' (allows 'OPEN_PALM' or transient 'UNKNOWN' motion-blur frames)
+        - Movement must be predominantly horizontal (|dx| >= 1.2 * |dy|)
+        - Minimum physical movement (|dx| >= 0.045)
+        - Cooldown elapsed (0.65s)
         Returns:
         - 'SWIPE_RIGHT': next SOP/recipe step
         - 'SWIPE_LEFT': previous SOP/recipe step
@@ -261,51 +266,57 @@ class GestureEngine:
         if now - self.last_swipe_time < self.swipe_cooldown:
             return None
 
-        # Swipe requires intentional open palm motion
-        if pose != "OPEN_PALM":
+        # Cannot swipe with a closed fist (which is reserved for scale tare)
+        if pose == "CLOSED_FIST":
             return None
 
-        if len(self.wrist_history) < 5:
+        if len(self.wrist_history) < 3:
             return None
 
-        t_start = self.wrist_history[0]["time"]
-        t_end = self.wrist_history[-1]["time"]
-        dt = t_end - t_start
-
-        if dt < 0.04 or dt > 0.40:
-            # Buffer too stale or time window too brief for realistic human hand swipe
-            return None
-
-        x_start = self.wrist_history[0]["x"]
-        x_end = self.wrist_history[-1]["x"]
-        dx = x_end - x_start
+        current = self.wrist_history[-1]
+        now_t = current["time"]
+        now_x = current["x"]
+        now_y = current.get("y", 0.5)
 
         # Average palm reference size over buffer
         d_palm_avg = sum(item.get("d_palm", 0.15) for item in self.wrist_history) / len(self.wrist_history)
         if d_palm_avg < 1e-4:
             d_palm_avg = 0.15
 
-        # Horizontal velocity in screen fraction per second
-        vx = dx / dt
-        # Palm-scaled velocity in palm-widths per second
-        vx_palm = vx / d_palm_avg
+        # Check candidate past frames within 0.04s to 0.45s time window
+        best_swipe = None
+        max_speed = 0.0
 
-        # Strict dual-criterion thresholding:
-        # 1. Must have deliberate physical movement (|dx| >= 0.06 to filter camera jitter)
-        # 2. Must meet screen velocity threshold (|vx| >= 0.55 or |vx_palm| >= 3.2)
-        has_min_displacement = abs(dx) >= 0.06
+        for past in list(self.wrist_history)[:-1]:
+            dt = now_t - past["time"]
+            if dt < 0.04 or dt > 0.45:
+                continue
 
-        is_swipe_right = has_min_displacement and (dx > 0) and ((vx > 0.55) or (vx_palm > 3.2))
-        is_swipe_left = has_min_displacement and (dx < 0) and ((vx < -0.55) or (vx_palm < -3.2))
+            dx = now_x - past["x"]
+            dy = now_y - past.get("y", 0.5)
 
-        if is_swipe_right:
+            # Horizontal dominance: swipe must be predominantly horizontal
+            # Only enforce if vertical motion is noticeable (> 0.06)
+            if abs(dy) > 0.06 and abs(dx) < 1.05 * abs(dy):
+                continue
+
+            # Minimum displacement (at least 4% of screen width)
+            if abs(dx) < 0.04:
+                continue
+
+            vx = dx / dt
+            vx_palm = vx / d_palm_avg
+
+            # Threshold check: standard screen speed (0.40) or palm-normalized speed (2.2)
+            if (abs(vx) >= self.swipe_threshold or (abs(vx_palm) >= 2.2 and abs(dx) >= 0.04)):
+                if abs(vx) > max_speed:
+                    max_speed = abs(vx)
+                    best_swipe = "SWIPE_RIGHT" if dx > 0 else "SWIPE_LEFT"
+
+        if best_swipe:
             self.last_swipe_time = now
             self.wrist_history.clear()
-            return "SWIPE_RIGHT"
-        elif is_swipe_left:
-            self.last_swipe_time = now
-            self.wrist_history.clear()
-            return "SWIPE_LEFT"
+            return best_swipe
 
         return None
 
@@ -364,7 +375,10 @@ class GestureEngine:
             # Decay counters when hands are not in frame
             self.fist_dwell_counter = max(0, self.fist_dwell_counter - 2)
             self.two_hand_stop_frames = max(0, self.two_hand_stop_frames - 2)
-            self.wrist_history.clear()
+            self.no_hand_frames += 1
+            # Prevent wiping trajectory during transient 1-3 frame motion blurs
+            if self.no_hand_frames >= 4:
+                self.wrist_history.clear()
             return {
                 "hands_count": 0,
                 "poses": [],
@@ -375,6 +389,7 @@ class GestureEngine:
                 "raw_results": results
             }
 
+        self.no_hand_frames = 0
         hands_count = len(results.multi_hand_landmarks)
 
         # Process each detected hand
@@ -405,30 +420,43 @@ class GestureEngine:
                 "raw_results": results
             }
 
-        # 2. Single hand (or primary hand) processing
-        primary_hand = hands_data[0]
-        pose = primary_hand["pose"]
+        # 2. Select active gesturing hand with spatial continuity
+        active_hand = hands_data[0]
+        if hands_count > 1 and len(self.wrist_history) > 0:
+            last_x = self.wrist_history[-1]["x"]
+            last_y = self.wrist_history[-1].get("y", 0.5)
+            # Find the hand closest to last position to maintain tracking continuity
+            active_hand = min(
+                hands_data,
+                key=lambda h: (h["raw"][self.WRIST]["x"] - last_x)**2 + (h["raw"][self.WRIST]["y"] - last_y)**2
+            )
+
+        pose = active_hand["pose"]
         primary_gesture = pose
-        wrist = primary_hand["raw"][self.WRIST]
+        wrist = active_hand["raw"][self.WRIST]
+        mcp = active_hand["raw"][self.MIDDLE_MCP]
         dwell_center = (wrist["px"], wrist["py"])
 
-        # Dynamic swipe only processes when exactly 1 hand is active
-        # to prevent alternating hand index jumps in multi-hand scenarios
-        if hands_count == 1:
-            dx = primary_hand["raw"][self.MIDDLE_MCP]["x"] - primary_hand["raw"][self.WRIST]["x"]
-            dy = primary_hand["raw"][self.MIDDLE_MCP]["y"] - primary_hand["raw"][self.WRIST]["y"]
-            d_palm = math.sqrt(dx * dx + dy * dy)
+        dx = mcp["x"] - wrist["x"]
+        dy = mcp["y"] - wrist["y"]
+        d_palm = math.sqrt(dx * dx + dy * dy)
 
-            self.update_wrist_trajectory(wrist, d_palm=d_palm)
-            swipe = self.detect_swipe(pose)
-            if swipe == "SWIPE_RIGHT":
-                action_trigger = "NEXT_STEP"
-                primary_gesture = "SWIPE_RIGHT"
-            elif swipe == "SWIPE_LEFT":
-                action_trigger = "PREV_STEP"
-                primary_gesture = "SWIPE_LEFT"
-        else:
-            self.wrist_history.clear()
+        # Palm center (average of wrist and middle MCP) captures both whole-arm and wrist-flick swipes
+        palm_center_pt = {
+            "x": (wrist["x"] + mcp["x"]) / 2.0,
+            "y": (wrist["y"] + mcp["y"]) / 2.0,
+            "px": int((wrist["px"] + mcp["px"]) / 2.0),
+            "py": int((wrist["py"] + mcp["py"]) / 2.0),
+        }
+
+        self.update_wrist_trajectory(palm_center_pt, d_palm=d_palm)
+        swipe = self.detect_swipe(pose)
+        if swipe == "SWIPE_RIGHT":
+            action_trigger = "NEXT_STEP"
+            primary_gesture = "SWIPE_RIGHT"
+        elif swipe == "SWIPE_LEFT":
+            action_trigger = "PREV_STEP"
+            primary_gesture = "SWIPE_LEFT"
 
         # 3. Check Closed Fist Dwell-Time for Tare
         if pose == "CLOSED_FIST":

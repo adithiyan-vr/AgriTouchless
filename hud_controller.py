@@ -80,6 +80,11 @@ class HUDController:
         self.sound_step = _generate_tone(frequency=587, duration=0.1)
         self.sound_alert = _generate_tone(frequency=260, duration=0.35)
 
+        # Transient Action Notification Banner (gives obvious feedback for Swipes & Tare)
+        self.action_banner_text = ""
+        self.action_banner_time = 0.0
+        self.action_banner_color = (0, 255, 120)
+
     def play_sound(self, sound_type: str):
         """Play low-latency feedback sound."""
         if not PYGAME_AVAILABLE:
@@ -98,6 +103,9 @@ class HUDController:
         """Zero out the digital scale with current load as tare offset."""
         self.tare_offset = self.raw_weight
         self.is_tared = True
+        self.action_banner_text = "SCALE ZEROED / TARED"
+        self.action_banner_time = time.time()
+        self.action_banner_color = (0, 255, 120)
         self.play_sound("tare")
 
     def next_step(self):
@@ -105,6 +113,14 @@ class HUDController:
         if self.current_step_idx < len(self.steps) - 1:
             self.current_step_idx += 1
             self.step_start_time = time.time()
+            self.action_banner_text = ">>> SWIPE RIGHT: NEXT STEP >>>"
+            self.action_banner_time = time.time()
+            self.action_banner_color = (0, 255, 120)
+            self.play_sound("step")
+        else:
+            self.action_banner_text = "SOP COMPLETE: ALL STEPS FINISHED"
+            self.action_banner_time = time.time()
+            self.action_banner_color = (0, 200, 255)
             self.play_sound("step")
 
     def prev_step(self):
@@ -112,6 +128,14 @@ class HUDController:
         if self.current_step_idx > 0:
             self.current_step_idx -= 1
             self.step_start_time = time.time()
+            self.action_banner_text = "<<< SWIPE LEFT: PREVIOUS STEP <<<"
+            self.action_banner_time = time.time()
+            self.action_banner_color = (0, 220, 255)
+            self.play_sound("step")
+        else:
+            self.action_banner_text = "SOP START: AT FIRST STEP (1/5)"
+            self.action_banner_time = time.time()
+            self.action_banner_color = (0, 220, 255)
             self.play_sound("step")
 
     def toggle_emergency_stop(self):
@@ -284,6 +308,23 @@ class HUDController:
 
         cv2.putText(frame, "[<< Swipe Left | Swipe Right >>]", (780, 485),
                     cv2.FONT_HERSHEY_DUPLEX, 0.6, self.COLOR_PROGRESS, 1, cv2.LINE_AA)
+
+        # --- Transient Action Notification Banner (Swipes / Tare) ---
+        now = time.time()
+        banner_elapsed = now - self.action_banner_time
+        if banner_elapsed < 1.4 and self.action_banner_text:
+            bx1, by1 = 340, 580
+            bx2, by2 = 940, 635
+            banner_overlay = frame.copy()
+            cv2.rectangle(banner_overlay, (bx1, by1), (bx2, by2), (25, 25, 25), -1)
+            cv2.addWeighted(banner_overlay, 0.85, frame, 0.15, 0, frame)
+            cv2.rectangle(frame, (bx1, by1), (bx2, by2), self.action_banner_color, 2, cv2.LINE_AA)
+
+            text_size = cv2.getTextSize(self.action_banner_text, cv2.FONT_HERSHEY_DUPLEX, 0.72, 2)[0]
+            tx = (bx1 + bx2 - text_size[0]) // 2
+            ty = (by1 + by2 + text_size[1]) // 2
+            cv2.putText(frame, self.action_banner_text, (tx, ty),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.72, self.action_banner_color, 2, cv2.LINE_AA)
 
         # --- Emergency Banner ---
         banner_text = "[EMERGENCY BANNER] Raise BOTH Open Palms to Trigger EMERGENCY STOP"
