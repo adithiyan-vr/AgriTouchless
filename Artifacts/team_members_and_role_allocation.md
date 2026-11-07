@@ -5,8 +5,8 @@ Our team consists of **2 Members** working in parallel during the 6-hour Saturda
 ---
 
 ## Member 1: Computer Vision & Gesture Lead
-* **Name:** `[Insert Member 1 Name]`
-* **GitHub Handle:** `[@member1-github]`
+* **Name:** `Adithiyan V R`
+* **GitHub Handle:** `@adithiyan-vr`
 * **Primary Ownership:** `gesture_engine.py`
 * **Core Responsibilities:**
   1. Set up the MediaPipe Hands pipeline (`max_num_hands=2`, confidence thresholds).
@@ -18,8 +18,8 @@ Our team consists of **2 Members** working in parallel during the 6-hour Saturda
 ---
 
 ## Member 2: Application State, UI/HUD & Audio Lead
-* **Name:** `[Insert Member 2 Name]`
-* **GitHub Handle:** `[@member2-github]`
+* **Name:** `Jazeem Anwar`
+* **GitHub Handle:** `@jazeemanwar`
 * **Primary Ownership:** `hud_controller.py` & `main.py`
 * **Core Responsibilities:**
   1. Design and render the OpenCV Heads-Up Display (HUD) using semi-transparent overlays (`cv2.addWeighted`).
